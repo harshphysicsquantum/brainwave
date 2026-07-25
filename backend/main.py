@@ -4,9 +4,71 @@ import socket
 from datetime import datetime
 import requests
 import re
-
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+FINDING_LOOKUP = {
+    "No breaches found": {"weight": 0, "fix": "No immediate action required. Continue using strong passwords and MFA."},
+    "No secrets found": {"weight": 0, "fix": "No action required. Continue following secure coding practices."},
+    "No common subdomains found": {"weight": 0, "fix": "No action required. Continue monitoring your attack surface."},
+    "All key security headers present": {"weight": 0, "fix": "No action needed. Continue following security best practices."},
+    "Certificate valid, expires in": {"weight": 0, "fix": "No action needed. Continue renewing the certificate before it expires."},
+    "Missing Referrer-Policy": {"weight": 1, "fix": "Configure a Referrer-Policy header that limits shared information."},
+    "Missing X-Content-Type-Options": {"weight": 2, "fix": "Add the X-Content-Type-Options header with the value nosniff."},
+    "Missing X-Frame-Options": {"weight": 2, "fix": "Add the X-Frame-Options header."},
+    "Certificate expires in": {"weight": 3, "fix": "Renew the certificate before it expires to avoid browser warnings."},
+    "Missing Strict-Transport-Security": {"weight": 3, "fix": "Enable the Strict-Transport-Security header."},
+    "Missing Content-Security-Policy": {"weight": 4, "fix": "Configure a Content-Security-Policy header."},
+    "subdomains found": {"weight": 5, "fix": "Review each subdomain and remove or secure any unnecessary ones."},
+    "OpenAI API Key": {"weight": 7, "fix": "Revoke the key, generate a new one, and store it securely."},
+    "Google API Key": {"weight": 7, "fix": "Restrict the key, rotate it if necessary, and remove it from the repository."},
+    "Self-signed certificate": {"weight": 7, "fix": "Replace it with a certificate issued by a trusted Certificate Authority."},
+    "Generic API Key": {"weight": 7, "fix": "Remove the key from the repository and rotate it if it is active."},
+    "Certificate has expired": {"weight": 8, "fix": "Renew and install a valid SSL/TLS certificate immediately."},
+    "Email in one breach": {"weight": 5, "fix": "Change reused passwords, enable multi-factor authentication, and monitor the account."},
+    "Email in multiple breaches": {"weight": 8, "fix": "Change passwords, enable MFA, and review account activity."},
+    "Firebase Secret": {"weight": 8, "fix": "Rotate the credentials and remove them from the repository."},
+    "JWT Secret": {"weight": 9, "fix": "Generate a new signing secret and invalidate previously signed tokens if appropriate."},
+    "GitHub Token": {"weight": 9, "fix": "Revoke the token immediately and create a new one with minimum required permissions."},
+    "Hardcoded Password": {"weight": 9, "fix": "Remove the password, rotate it immediately, and use a secure secret manager."},
+    "AWS Key": {"weight": 10, "fix": "Revoke the key immediately, generate a new one, and remove it from the repository."},
+    "Private Key": {"weight": 10, "fix": "Revoke or replace the key immediately and remove it from the repository."}
+}
+
+def score_findings(category_result):
+    total_weight = 0
+    enriched_findings = []
+
+    for finding in category_result["findings"]:
+        matched = None
+        for key, data in FINDING_LOOKUP.items():
+            if key in finding:
+                matched = data
+                break
+
+        weight = matched["weight"] if matched else 0
+        fix = matched["fix"] if matched else "No specific remediation available."
+        total_weight += weight
+
+        enriched_findings.append({
+            "text": finding,
+            "severity_weight": weight,
+            "fix": fix
+        })
+
+    total_weight = min(total_weight, 10)
+    normalized_score = max(0, 100 - (total_weight * 10))
+
+    return normalized_score, enriched_findings
 
 def check_ssl(domain: str):
     try:
@@ -15,7 +77,7 @@ def check_ssl(domain: str):
             with context.wrap_socket(sock, server_hostname=domain) as ssock:
                 cert = ssock.getpeercert()
 
-        expiry_str = cert['notAfter']  # e.g. 'Jun  1 12:00:00 2026 GMT'
+        expiry_str = cert['notAfter']
         expiry_date = datetime.strptime(expiry_str, '%b %d %H:%M:%S %Y %Z')
         days_left = (expiry_date - datetime.utcnow()).days
 
@@ -32,6 +94,8 @@ def check_ssl(domain: str):
 
         return {"score": score, "findings": findings}
 
+    except ssl.SSLCertVerificationError:
+        return {"score": 30, "findings": ["Self-signed certificate"]}
     except Exception as e:
         return {"score": 0, "findings": [f"Could not check SSL: {str(e)}"]}
 
@@ -71,14 +135,18 @@ def check_breach(email: str):
         response = requests.get(f"https://api.xposedornot.com/v1/check-email/{email}", timeout=5)
         data = response.json()
 
-        breaches = data.get("breaches", [[]])[0]  # API returns a nested list
+        breaches = data.get("breaches", [[]])[0]
+        count = len(breaches)
 
-        if breaches:
-            score = max(0, 100 - (len(breaches) * 20))
-            findings = [f"Found in {len(breaches)} breach(es): {', '.join(breaches[:3])}"]
-        else:
+        if count == 0:
             score = 100
             findings = ["No breaches found"]
+        elif count == 1:
+            score = 60
+            findings = [f"Email in one breach: {breaches[0]}"]
+        else:
+            score = 20
+            findings = [f"Email in multiple breaches ({count}): {', '.join(breaches[:3])}"]
 
         return {"score": score, "findings": findings}
 
@@ -125,10 +193,16 @@ def check_secrets(github_org: str):
             return {"score": 50, "findings": [f"Could not fetch repos: {repos.get('message', 'unknown error')}"]}
 
         patterns = {
-            "AWS Key": r"AKIA[0-9A-Z]{16}",
-            "Generic API Key": r"(?i)api[_-]?key['\"]?\s*[:=]\s*['\"][0-9a-zA-Z]{16,}['\"]",
-            "Private Key": r"-----BEGIN (RSA|EC|DSA)? ?PRIVATE KEY-----"
-        }
+    "AWS Key": r"AKIA[0-9A-Z]{16}",
+    "Generic API Key": r"(?i)api[_-]?key['\"]?\s*[:=]\s*['\"][0-9a-zA-Z]{16,}['\"]",
+    "Private Key": r"-----BEGIN (RSA|EC|DSA)? ?PRIVATE KEY-----",
+    "OpenAI API Key": r"sk-[a-zA-Z0-9]{20,}",
+    "Google API Key": r"AIza[0-9A-Za-z\-_]{35}",
+    "GitHub Token": r"gh[pousr]_[A-Za-z0-9]{36,}",
+    "Firebase Secret": r"(?i)firebase.{0,20}['\"][A-Za-z0-9\-_]{20,}['\"]",
+    "JWT Secret": r"eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+",
+    "Hardcoded Password": r"(?i)password['\"]?\s*[:=]\s*['\"][^'\"]{6,}['\"]"
+}
 
         findings = []
         checked_files = 0
@@ -169,14 +243,26 @@ def check_secrets(github_org: str):
 
 @app.get("/scan")
 def scan(domain: str, email: str = "test@example.com", github_org: str = "github"):
+    raw_categories = {
+        "ssl": check_ssl(domain),
+        "headers": check_headers(domain),
+        "subdomains": check_subdomains(domain),
+        "secrets": check_secrets(github_org),
+        "breach": check_breach(email)
+    }
+
+    final_categories = {}
+    category_scores = []
+
+    for name, result in raw_categories.items():
+        score, enriched = score_findings(result)
+        final_categories[name] = {"score": score, "findings": enriched}
+        category_scores.append(score)
+
+    overall_score = int(sum(category_scores) / len(category_scores))
+
     return {
         "domain": domain,
-        "overall_score": 62,
-        "categories": {
-            "ssl": check_ssl(domain),
-            "headers": check_headers(domain),
-            "subdomains": check_subdomains(domain),
-            "secrets": check_secrets(github_org),
-            "breach": check_breach(email)
-        }
+        "overall_score": overall_score,
+        "categories": final_categories
     }
