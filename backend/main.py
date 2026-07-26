@@ -5,6 +5,11 @@ from datetime import datetime
 import requests
 import re
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+import io
 
 app = FastAPI()
 
@@ -266,3 +271,42 @@ def scan(domain: str, email: str = "test@example.com", github_org: str = "github
         "overall_score": overall_score,
         "categories": final_categories
     }
+
+@app.get("/report")
+def generate_report(domain: str, email: str = "test@example.com", github_org: str = "github"):
+    scan_result = scan(domain, email, github_org)
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=40, bottomMargin=40)
+    styles = getSampleStyleSheet()
+    elements = []
+
+    title_style = ParagraphStyle('title', parent=styles['Title'], fontSize=22)
+    elements.append(Paragraph("MicroASM Exposure Report", title_style))
+    elements.append(Spacer(1, 6))
+    elements.append(Paragraph(f"Target: {scan_result['domain']}", styles['Normal']))
+    elements.append(Paragraph(f"Overall Risk Score: {scan_result['overall_score']} / 100", styles['Heading2']))
+    elements.append(Spacer(1, 20))
+
+    cat_labels = {"ssl": "TLS / SSL", "headers": "Security Headers", "subdomains": "Subdomains", "secrets": "Leaked Secrets", "breach": "Breach Exposure"}
+
+    for cat_key, label in cat_labels.items():
+        cat = scan_result["categories"][cat_key]
+        elements.append(Paragraph(f"{label} — Score: {cat['score']}/100", styles['Heading3']))
+
+        for f in cat["findings"]:
+            elements.append(Paragraph(f"<b>Finding:</b> {f['text']}", styles['Normal']))
+            elements.append(Paragraph(f"<b>Severity weight:</b> {f['severity_weight']}/10", styles['Normal']))
+            elements.append(Paragraph(f"<b>Fix:</b> {f['fix']}", styles['Normal']))
+            elements.append(Spacer(1, 10))
+
+        elements.append(Spacer(1, 10))
+
+    doc.build(elements)
+    buffer.seek(0)
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=microasm-report-{domain}.pdf"}
+    )
