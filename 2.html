@@ -1186,6 +1186,46 @@
       background: linear-gradient(90deg, var(--green), var(--cyan));
     }
 
+    .download-report-wrap {
+      margin-top: 18px;
+      display: flex;
+      justify-content: center;
+      opacity: 0;
+      transform: translateY(6px);
+      pointer-events: none;
+      transition: opacity .5s ease, transform .5s ease;
+    }
+
+    .download-report-wrap.visible {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+
+    .download-report-btn {
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 500;
+      background: var(--card-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 11px 22px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      text-decoration: none;
+      transition: border-color .2s ease, background .2s ease, transform .15s ease, box-shadow .15s ease;
+    }
+
+    .download-report-btn:hover {
+      border-color: var(--cyan);
+      background: rgba(34, 217, 200, .08);
+      transform: translateY(-1px);
+      box-shadow: 0 8px 24px -8px rgba(34, 217, 200, .4);
+    }
+
     .dashboard {
       background: var(--bg);
     }
@@ -1724,6 +1764,12 @@
               <div class="prow-top"><span class="pname">Breach</span><span class="pval" id="pv-breach">0%</span></div>
               <div class="pbar breach"><i id="pb-breach"></i></div>
             </div>
+
+            <div class="download-report-wrap" id="downloadReportWrap">
+              <a class="download-report-btn" id="downloadReportBtn" href="#" download>
+                <span aria-hidden="true">⭳</span> Download report
+              </a>
+            </div>
           </div>
         </div>
       </div>
@@ -2083,6 +2129,18 @@
         ['subdomains', 'headers', 'tls', 'secrets', 'breach'].forEach(function (c) { setProgress(c, 0); });
       }
 
+      function hideDownloadReport() {
+        var wrap = document.getElementById('downloadReportWrap');
+        if (wrap) { wrap.classList.remove('visible'); }
+      }
+
+      function showDownloadReport(url) {
+        var wrap = document.getElementById('downloadReportWrap');
+        var btn = document.getElementById('downloadReportBtn');
+        if (btn && url) { btn.href = url; }
+        if (wrap) { wrap.classList.add('visible'); }
+      }
+
       function addLine(html) {
         var div = document.createElement('div');
         div.className = 'tline';
@@ -2097,6 +2155,7 @@
         running = true;
         body.innerHTML = '';
         resetProgress();
+        hideDownloadReport();
 
         var domain = document.getElementById('in-domain').value.trim();
         var org = document.getElementById('in-org').value.trim();
@@ -2127,6 +2186,8 @@
             running = false;
             renderRealResults(data);
             animateDashboard();
+            var reportUrl = 'http://127.0.0.1:8000/report?domain=' + encodeURIComponent(domain) + '&github_org=' + encodeURIComponent(org) + '&email=' + encodeURIComponent(email);
+            showDownloadReport(reportUrl);
             return;
           }
           var catKey = catOrder[i];
@@ -2146,173 +2207,165 @@
       function renderRealResults(data) {
         GAUGE_SCORE = data.overall_score || 0;
 
+        // pull real per-category scores into the radar, falling back to 0 if missing
         if (data.categories) {
           var order = ['subdomains', 'headers', 'ssl', 'secrets', 'breach'];
           RADAR_VALUES = order.map(function (k) {
             var c = data.categories[k];
             return c && typeof c.score === 'number' ? c.score / 100 : 0;
           });
+        }
 
-          var catLabels = { subdomains: 'Subdomains', headers: 'Headers', ssl: 'TLS / SSL', secrets: 'Secrets', breach: 'Breach' };
+        // rebuild the findings list from real data, if the backend sent detailed findings
+        if (data.findings && Array.isArray(data.findings)) {
           var list = document.getElementById('findingsList');
           list.innerHTML = '';
-          var first = true;
-
-          order.forEach(function (catKey) {
-            var cat = data.categories[catKey];
-            if (!cat) return;
-            (cat.findings || []).forEach(function (f) {
-              var w = f.severity_weight || 0;
-              var sev = w >= 9 ? 'critical' : w >= 7 ? 'high' : w >= 4 ? 'medium' : 'low';
-
-              var det = document.createElement('details');
-              det.className = 'finding';
-              det.dataset.sev = sev;
-              if (first) { det.open = true; first = false; }
-              det.innerHTML =
-                '<summary>' +
-                '<div class="f-left"><span class="f-sev">' + sev + '</span><span class="f-title">' + f.text + '</span></div>' +
-                '<div class="f-left"><span class="f-cat">' + catLabels[catKey] + '</span><svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>' +
-                '</summary>' +
-                '<div class="finding-body">' + f.fix + '</div>';
-              list.appendChild(det);
-            });
+          data.findings.forEach(function (f, idx) {
+            var det = document.createElement('details');
+            det.className = 'finding';
+            det.dataset.sev = f.severity || 'low';
+            if (idx === 0) det.open = true;
+            det.innerHTML =
+              '<summary>' +
+              '<div class="f-left"><span class="f-sev">' + (f.severity || 'low') + '</span><span class="f-title">' + (f.title || '') + '</span></div>' +
+              '<div class="f-left"><span class="f-cat">' + (f.category || '') + '</span><svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>' +
+              '</summary>' +
+              '<div class="finding-body">' + (f.detail || '') + '</div>';
+            list.appendChild(det);
           });
         }
       }
 
-      
+      runBtn.addEventListener('click', function () {
+        document.getElementById('demo').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        setTimeout(playScan, 500);
+      });
 
-  runBtn.addEventListener('click', function () {
-      document.getElementById('demo').scrollIntoView({ behavior: 'smooth', block: 'start' });
-      setTimeout(playScan, 500);
-    });
+      var played = false;
+      var demoSection = document.getElementById('demo');
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting && !played) {
+            played = true;
+            playScan();
+          }
+        });
+      }, { threshold: .4 });
+      io.observe(demoSection);
 
-    var played = false;
-    var demoSection = document.getElementById('demo');
-    var io = new IntersectionObserver(function (entries) {
-      entries.forEach(function (e) {
-        if (e.isIntersecting && !played) {
-          played = true;
-          playScan();
+      /* ---------------- gauge ---------------- */
+      function animateGauge() {
+        var arc = document.getElementById('gaugeArc');
+        var needle = document.getElementById('gaugeNeedle');
+        var num = document.getElementById('gaugeNum');
+        var cat = document.getElementById('gaugeCat');
+        var circumference = 314;
+        var pct = GAUGE_SCORE / 100;
+        arc.style.transition = 'stroke-dashoffset 1.6s cubic-bezier(.3,.8,.2,1)';
+        requestAnimationFrame(function () {
+          arc.style.strokeDashoffset = (circumference - circumference * pct);
+        });
+        var deg = -90 + (180 * pct);
+        needle.style.transform = 'rotate(' + deg + 'deg)';
+
+        var dur = 1400, t0 = performance.now();
+        function tick(t) {
+          var p = Math.min(1, (t - t0) / dur);
+          var val = Math.round(p * GAUGE_SCORE);
+          num.firstChild.textContent = val;
+          if (p < 1) requestAnimationFrame(tick);
         }
-      });
-    }, { threshold: .4 });
-    io.observe(demoSection);
-
-    /* ---------------- gauge ---------------- */
-    function animateGauge() {
-      var arc = document.getElementById('gaugeArc');
-      var needle = document.getElementById('gaugeNeedle');
-      var num = document.getElementById('gaugeNum');
-      var cat = document.getElementById('gaugeCat');
-      var circumference = 314;
-      var pct = GAUGE_SCORE / 100;
-      arc.style.transition = 'stroke-dashoffset 1.6s cubic-bezier(.3,.8,.2,1)';
-      requestAnimationFrame(function () {
-        arc.style.strokeDashoffset = (circumference - circumference * pct);
-      });
-      var deg = -90 + (180 * pct);
-      needle.style.transform = 'rotate(' + deg + 'deg)';
-
-      var dur = 1400, t0 = performance.now();
-      function tick(t) {
-        var p = Math.min(1, (t - t0) / dur);
-        var val = Math.round(p * GAUGE_SCORE);
-        num.firstChild.textContent = val;
-        if (p < 1) requestAnimationFrame(tick);
+        requestAnimationFrame(tick);
+        setTimeout(function () {
+          var label = GAUGE_SCORE >= 66 ? 'High risk' : (GAUGE_SCORE >= 33 ? 'Moderate risk' : 'Low risk');
+          var color = GAUGE_SCORE >= 66 ? 'var(--sev-high)' : (GAUGE_SCORE >= 33 ? 'var(--sev-medium)' : 'var(--sev-low)');
+          cat.textContent = label;
+          cat.style.color = color;
+        }, dur);
       }
-      requestAnimationFrame(tick);
-      setTimeout(function () {
-        var label = GAUGE_SCORE >= 66 ? 'High risk' : (GAUGE_SCORE >= 33 ? 'Moderate risk' : 'Low risk');
-        var color = GAUGE_SCORE >= 66 ? 'var(--sev-high)' : (GAUGE_SCORE >= 33 ? 'var(--sev-medium)' : 'var(--sev-low)');
-        cat.textContent = label;
-        cat.style.color = color;
-      }, dur);
-    }
 
-    /* ---------------- radar ---------------- */
-    function drawRadarGrid() {
-      var cx = 160, cy = 150, r = 105, axes = 5;
-      var grid = document.getElementById('radarGrid');
-      var labels = document.getElementById('radarLabels');
-      var names = ['Subdomains', 'Headers', 'TLS', 'Secrets', 'Breach'];
-      var rings = [0.25, 0.5, 0.75, 1];
-      rings.forEach(function (f) {
-        var pts = [];
+      /* ---------------- radar ---------------- */
+      function drawRadarGrid() {
+        var cx = 160, cy = 150, r = 105, axes = 5;
+        var grid = document.getElementById('radarGrid');
+        var labels = document.getElementById('radarLabels');
+        var names = ['Subdomains', 'Headers', 'TLS', 'Secrets', 'Breach'];
+        var rings = [0.25, 0.5, 0.75, 1];
+        rings.forEach(function (f) {
+          var pts = [];
+          for (var a = 0; a < axes; a++) {
+            var ang = (Math.PI * 2 * a / axes) - Math.PI / 2;
+            pts.push((cx + r * f * Math.cos(ang)) + ',' + (cy + r * f * Math.sin(ang)));
+          }
+          var poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+          poly.setAttribute('points', pts.join(' '));
+          poly.setAttribute('fill', 'none');
+          poly.setAttribute('stroke', 'rgba(255,255,255,.08)');
+          poly.setAttribute('stroke-width', '1');
+          grid.appendChild(poly);
+        });
         for (var a = 0; a < axes; a++) {
           var ang = (Math.PI * 2 * a / axes) - Math.PI / 2;
-          pts.push((cx + r * f * Math.cos(ang)) + ',' + (cy + r * f * Math.sin(ang)));
+          var x2 = cx + r * Math.cos(ang), y2 = cy + r * Math.sin(ang);
+          var line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+          line.setAttribute('x1', cx); line.setAttribute('y1', cy);
+          line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+          line.setAttribute('stroke', 'rgba(255,255,255,.08)');
+          grid.appendChild(line);
+
+          var lx = cx + (r + 26) * Math.cos(ang), ly = cy + (r + 26) * Math.sin(ang);
+          var text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+          text.setAttribute('x', lx); text.setAttribute('y', ly);
+          text.setAttribute('text-anchor', 'middle');
+          text.setAttribute('dominant-baseline', 'middle');
+          text.setAttribute('fill', '#84979d');
+          text.setAttribute('font-family', 'IBM Plex Mono, monospace');
+          text.setAttribute('font-size', '10.5');
+          text.textContent = names[a];
+          labels.appendChild(text);
         }
-        var poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-        poly.setAttribute('points', pts.join(' '));
-        poly.setAttribute('fill', 'none');
-        poly.setAttribute('stroke', 'rgba(255,255,255,.08)');
-        poly.setAttribute('stroke-width', '1');
-        grid.appendChild(poly);
-      });
-      for (var a = 0; a < axes; a++) {
-        var ang = (Math.PI * 2 * a / axes) - Math.PI / 2;
-        var x2 = cx + r * Math.cos(ang), y2 = cy + r * Math.sin(ang);
-        var line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        line.setAttribute('x1', cx); line.setAttribute('y1', cy);
-        line.setAttribute('x2', x2); line.setAttribute('y2', y2);
-        line.setAttribute('stroke', 'rgba(255,255,255,.08)');
-        grid.appendChild(line);
-
-        var lx = cx + (r + 26) * Math.cos(ang), ly = cy + (r + 26) * Math.sin(ang);
-        var text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        text.setAttribute('x', lx); text.setAttribute('y', ly);
-        text.setAttribute('text-anchor', 'middle');
-        text.setAttribute('dominant-baseline', 'middle');
-        text.setAttribute('fill', '#84979d');
-        text.setAttribute('font-family', 'IBM Plex Mono, monospace');
-        text.setAttribute('font-size', '10.5');
-        text.textContent = names[a];
-        labels.appendChild(text);
       }
-    }
-    drawRadarGrid();
+      drawRadarGrid();
 
-    function animateRadar() {
-      var cx = 160, cy = 150, r = 105, axes = 5;
-      var values = RADAR_VALUES;
-      var shape = document.getElementById('radarShape');
-      var dots = document.getElementById('radarDots');
-      var target = [];
-      for (var a = 0; a < axes; a++) {
-        var ang = (Math.PI * 2 * a / axes) - Math.PI / 2;
-        target.push([cx + r * values[a] * Math.cos(ang), cy + r * values[a] * Math.sin(ang)]);
-      }
-      var start = target.map(function () { return [cx, cy]; });
-      var dur = 1200, t0 = performance.now();
-      function tick(t) {
-        var p = Math.min(1, (t - t0) / dur);
-        var eased = 1 - Math.pow(1 - p, 3);
-        var pts = target.map(function (pt, idx) {
-          var sx = start[idx][0], sy = start[idx][1];
-          return (sx + (pt[0] - sx) * eased) + ',' + (sy + (pt[1] - sy) * eased);
-        });
-        shape.setAttribute('points', pts.join(' '));
-        if (p < 1) { requestAnimationFrame(tick); }
-        else {
-          dots.innerHTML = '';
-          target.forEach(function (pt) {
-            var c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-            c.setAttribute('cx', pt[0]); c.setAttribute('cy', pt[1]); c.setAttribute('r', 3.5);
-            c.setAttribute('fill', '#22d9c8');
-            dots.appendChild(c);
+      function animateRadar() {
+        var cx = 160, cy = 150, r = 105, axes = 5;
+        var values = RADAR_VALUES;
+        var shape = document.getElementById('radarShape');
+        var dots = document.getElementById('radarDots');
+        var target = [];
+        for (var a = 0; a < axes; a++) {
+          var ang = (Math.PI * 2 * a / axes) - Math.PI / 2;
+          target.push([cx + r * values[a] * Math.cos(ang), cy + r * values[a] * Math.sin(ang)]);
+        }
+        var start = target.map(function () { return [cx, cy]; });
+        var dur = 1200, t0 = performance.now();
+        function tick(t) {
+          var p = Math.min(1, (t - t0) / dur);
+          var eased = 1 - Math.pow(1 - p, 3);
+          var pts = target.map(function (pt, idx) {
+            var sx = start[idx][0], sy = start[idx][1];
+            return (sx + (pt[0] - sx) * eased) + ',' + (sy + (pt[1] - sy) * eased);
           });
+          shape.setAttribute('points', pts.join(' '));
+          if (p < 1) { requestAnimationFrame(tick); }
+          else {
+            dots.innerHTML = '';
+            target.forEach(function (pt) {
+              var c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+              c.setAttribute('cx', pt[0]); c.setAttribute('cy', pt[1]); c.setAttribute('r', 3.5);
+              c.setAttribute('fill', '#22d9c8');
+              dots.appendChild(c);
+            });
+          }
         }
+        requestAnimationFrame(tick);
       }
-      requestAnimationFrame(tick);
-    }
 
-    function animateDashboard() {
-      animateGauge();
-      animateRadar();
-    }
-}) ();
+      function animateDashboard() {
+        animateGauge();
+        animateRadar();
+      }
+    })();
   </script>
 </body>
 
