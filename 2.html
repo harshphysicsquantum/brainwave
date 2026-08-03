@@ -1735,7 +1735,7 @@
         <div class="demo-layout">
           <div class="terminal">
             <div class="terminal-head">
-              <span class="console-label">scan · usehatchling.io</span>
+              <span class="console-label">scan </span>
               <span class="status-pill"><i></i>RUNNING</span>
             </div>
             <div class="terminal-body" id="terminalBody"></div>
@@ -2150,6 +2150,18 @@
         return div;
       }
 
+      // Clears the findings panel and shows a short status message in its
+      // place. Used both when the backend can't be reached and when it
+      // returns no findings — without this, stale demo <details> blocks
+      // from the initial page HTML would stay on screen forever and make
+      // every scan look identical, regardless of the domain scanned.
+      function setFindingsStatus(message) {
+        var list = document.getElementById('findingsList');
+        if (list) {
+          list.innerHTML = '<div class="sub">' + message + '</div>';
+        }
+      }
+
       async function playScan() {
         if (running) return;
         running = true;
@@ -2172,6 +2184,9 @@
           data = await response.json();
         } catch (err) {
           addLine('<span class="bad">✗</span> could not reach scan backend at 127.0.0.1:8000 — is it running?');
+          // FIX: clear stale demo findings instead of leaving the static
+          // HTML content on screen when the backend is unreachable.
+          setFindingsStatus('No live data — backend unreachable.');
           running = false;
           return;
         }
@@ -2217,22 +2232,33 @@
         }
 
         // rebuild the findings list from real data, if the backend sent detailed findings
+        var list = document.getElementById('findingsList');
         if (data.findings && Array.isArray(data.findings)) {
-          var list = document.getElementById('findingsList');
-          list.innerHTML = '';
-          data.findings.forEach(function (f, idx) {
-            var det = document.createElement('details');
-            det.className = 'finding';
-            det.dataset.sev = f.severity || 'low';
-            if (idx === 0) det.open = true;
-            det.innerHTML =
-              '<summary>' +
-              '<div class="f-left"><span class="f-sev">' + (f.severity || 'low') + '</span><span class="f-title">' + (f.title || '') + '</span></div>' +
-              '<div class="f-left"><span class="f-cat">' + (f.category || '') + '</span><svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>' +
-              '</summary>' +
-              '<div class="finding-body">' + (f.detail || '') + '</div>';
-            list.appendChild(det);
-          });
+          if (data.findings.length === 0) {
+            // FIX: explicit "clean scan" state instead of leaving old
+            // demo findings (or a blank panel) on screen.
+            setFindingsStatus('No findings — scan came back clean.');
+          } else {
+            list.innerHTML = '';
+            data.findings.forEach(function (f, idx) {
+              var det = document.createElement('details');
+              det.className = 'finding';
+              det.dataset.sev = f.severity || 'low';
+              if (idx === 0) det.open = true;
+              det.innerHTML =
+                '<summary>' +
+                '<div class="f-left"><span class="f-sev">' + (f.severity || 'low') + '</span><span class="f-title">' + (f.title || '') + '</span></div>' +
+                '<div class="f-left"><span class="f-cat">' + (f.category || '') + '</span><svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>' +
+                '</summary>' +
+                '<div class="finding-body">' + (f.detail || '') + '</div>';
+              list.appendChild(det);
+            });
+          }
+        } else {
+          // FIX: warn loudly instead of silently doing nothing when the
+          // backend response doesn't match the expected contract.
+          console.warn('Backend /scan response missing a `findings` array — check API contract', data);
+          setFindingsStatus('Backend response was missing findings data — check console.');
         }
       }
 
