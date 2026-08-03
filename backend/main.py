@@ -10,6 +10,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 import io
+from reportlab.lib import colors
 
 app = FastAPI()
 
@@ -48,6 +49,29 @@ FINDING_LOOKUP = {
     "AWS Key": {"weight": 10, "fix": "Revoke the key immediately, generate a new one, and remove it from the repository."},
     "Private Key": {"weight": 10, "fix": "Revoke or replace the key immediately and remove it from the repository."}
 }
+
+# Human-readable category labels, shared between the /scan flat findings
+# list, the frontend "category" chip, and the PDF report.
+CATEGORY_LABELS = {
+    "ssl": "TLS / SSL",
+    "headers": "Headers",
+    "subdomains": "Subdomains",
+    "secrets": "Secrets",
+    "breach": "Breach",
+}
+
+
+def weight_to_severity(weight: int) -> str:
+    """Map a 0-10 severity weight onto the four severity buckets the
+    frontend's CSS (data-sev="critical|high|medium|low") expects."""
+    if weight >= 8:
+        return "critical"
+    if weight >= 5:
+        return "high"
+    if weight >= 2:
+        return "medium"
+    return "low"
+
 
 def score_findings(category_result):
     total_weight = 0
@@ -246,6 +270,31 @@ def check_secrets(github_org: str):
     except Exception as e:
         return {"score": 50, "findings": [f"Could not check secrets: {str(e)}"]}
 
+
+def build_flat_findings(final_categories: dict) -> list:
+    """Flatten the per-category findings into the single top-level list
+    the frontend's renderRealResults() expects:
+        { severity, title, category, detail }
+    Sorted worst-first so the most severe finding renders open by default
+    (frontend auto-opens index 0)."""
+    flat = []
+    for cat_key, result in final_categories.items():
+        category_label = CATEGORY_LABELS.get(cat_key, cat_key)
+        for f in result["findings"]:
+            flat.append({
+                "severity": weight_to_severity(f["severity_weight"]),
+                "title": f["text"],
+                "category": category_label,
+                "detail": f["fix"],
+                "_weight": f["severity_weight"],  # used only for sorting below
+            })
+
+    flat.sort(key=lambda f: f["_weight"], reverse=True)
+    for f in flat:
+        del f["_weight"]
+    return flat
+
+
 @app.get("/scan")
 def scan(domain: str, email: str = "test@example.com", github_org: str = "github"):
     raw_categories = {
@@ -269,7 +318,12 @@ def scan(domain: str, email: str = "test@example.com", github_org: str = "github
     return {
         "domain": domain,
         "overall_score": overall_score,
-        "categories": final_categories
+        "categories": final_categories,
+        # NEW: flat findings list — this is what the frontend's
+        # renderRealResults() reads via `data.findings`. Without this key
+        # the findings panel silently keeps whatever static HTML was
+        # already on the page, which is why every domain looked identical.
+        "findings": build_flat_findings(final_categories),
     }
 
 @app.get("/report")
@@ -281,26 +335,60 @@ def generate_report(domain: str, email: str = "test@example.com", github_org: st
     styles = getSampleStyleSheet()
     elements = []
 
-    title_style = ParagraphStyle('title', parent=styles['Title'], fontSize=22)
+    # ---------- color palette (matches the dashboard) ----------
+    cyan = colors.HexColor("#1b8fa0")
+    green = colors.HexColor("#2e9e6f")
+    amber = colors.HexColor("#d99a2b")
+    orange = colors.HexColor("#e07a2f")
+    red = colors.HexColor("#d93b2b")
+    dark = colors.HexColor("#1a1a1a")
+    gray = colors.HexColor("#666666")
+
+    def severity_color(weight):
+        if weight == 0: return green
+        if weight <= 3: return colors.HexColor("#7a9e2e")
+        if weight <= 6: return amber
+        if weight <= 8: return orange
+        return red
+
+    def score_color(score):
+        if score >= 80: return green
+        if score >= 50: return amber
+        return red
+
+    # ---------- styles ----------
+    title_style = ParagraphStyle('title', parent=styles['Title'], fontSize=24, textColor=dark, spaceAfter=4)
+    target_style = ParagraphStyle('target', parent=styles['Normal'], fontSize=12, textColor=gray)
+    cat_style = ParagraphStyle('cat', parent=styles['Heading3'], fontSize=14, textColor=cyan, spaceBefore=16, spaceAfter=6)
+    normal = ParagraphStyle('normal', parent=styles['Normal'], fontSize=10.5, textColor=dark, spaceAfter=3)
+
+    # ---------- header ----------
     elements.append(Paragraph("MicroASM Exposure Report", title_style))
-    elements.append(Spacer(1, 6))
-    elements.append(Paragraph(f"Target: {scan_result['domain']}", styles['Normal']))
-    elements.append(Paragraph(f"Overall Risk Score: {scan_result['overall_score']} / 100", styles['Heading2']))
+    elements.append(Paragraph(f"Target: {scan_result['domain']}", target_style))
+    elements.append(Spacer(1, 14))
+
+    overall = scan_result['overall_score']
+    score_style = ParagraphStyle('score', parent=styles['Heading1'], fontSize=20, textColor=score_color(overall))
+    elements.append(Paragraph(f"Overall Risk Score: {overall} / 100", score_style))
     elements.append(Spacer(1, 20))
 
-    cat_labels = {"ssl": "TLS / SSL", "headers": "Security Headers", "subdomains": "Subdomains", "secrets": "Leaked Secrets", "breach": "Breach Exposure"}
-
-    for cat_key, label in cat_labels.items():
+    for cat_key, label in CATEGORY_LABELS.items():
         cat = scan_result["categories"][cat_key]
-        elements.append(Paragraph(f"{label} — Score: {cat['score']}/100", styles['Heading3']))
+        elements.append(Paragraph(f"{label} — Score: {cat['score']}/100", cat_style))
 
         for f in cat["findings"]:
-            elements.append(Paragraph(f"<b>Finding:</b> {f['text']}", styles['Normal']))
-            elements.append(Paragraph(f"<b>Severity weight:</b> {f['severity_weight']}/10", styles['Normal']))
-            elements.append(Paragraph(f"<b>Fix:</b> {f['fix']}", styles['Normal']))
+            w = f['severity_weight']
+            sev_color = severity_color(w)
+
+            tag_style = ParagraphStyle('tag', parent=normal, textColor=colors.white, backColor=sev_color,
+                                        borderPadding=(3, 6, 3, 6), fontSize=8.5)
+            elements.append(Paragraph(f"<b>Severity: {w}/10</b>", tag_style))
+            elements.append(Paragraph(f"<b>Finding:</b> {f['text']}", normal))
+            fix_style = ParagraphStyle('fix', parent=normal, textColor=colors.HexColor("#2c6e3f"))
+            elements.append(Paragraph(f"<b>Fix:</b> {f['fix']}", fix_style))
             elements.append(Spacer(1, 10))
 
-        elements.append(Spacer(1, 10))
+        elements.append(Spacer(1, 6))
 
     doc.build(elements)
     buffer.seek(0)
