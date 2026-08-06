@@ -2208,7 +2208,10 @@
             running = false;
             renderRealResults(data);
             animateDashboard();
-            var reportUrl = 'http://127.0.0.1:8000/report?domain=' + encodeURIComponent(domain) + '&github_org=' + encodeURIComponent(org) + '&email=' + encodeURIComponent(email);
+            var reportUrl = 'https://brainwave-phi5.onrender.com/report?domain=' +
+    encodeURIComponent(domain) +
+    '&github_org=' + encodeURIComponent(org) +
+    '&email=' + encodeURIComponent(email);
             showDownloadReport(reportUrl);
             return;
           }
