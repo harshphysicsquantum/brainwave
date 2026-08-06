@@ -2179,7 +2179,14 @@
 
         var data;
         try {
-          var response = await fetch('http://127.0.0.1:8000/scan?domain=' + encodeURIComponent(domain) + '&github_org=' + encodeURIComponent(org) + '&email=' + encodeURIComponent(email));
+          var response = await fetch(
+    'https://brainwave-phi5.onrender.com/scan?domain=' +
+    encodeURIComponent(domain) +
+    '&github_org=' +
+    encodeURIComponent(org) +
+    '&email=' +
+    encodeURIComponent(email)
+);
           if (!response.ok) { throw new Error('HTTP ' + response.status); }
           data = await response.json();
         } catch (err) {
